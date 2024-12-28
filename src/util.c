@@ -20,7 +20,6 @@ bool is_substring(const char *substr, const char *str) {
 	return false;
 }
 
-
 const char *phy2str(uint8_t phy) {
 	switch (phy) {
 	case 0: return "No packets";
@@ -29,4 +28,25 @@ const char *phy2str(uint8_t phy) {
 	case BT_GAP_LE_PHY_CODED: return "LE Coded";
 	default: return "Unknown";
 	}
+}
+
+/* This is copied from controller code. For split builds the linker will fail otherwise. */
+uint32_t _util_get_bits(uint8_t *data, uint8_t bit_offs, uint8_t num_bits) {
+	uint32_t value;
+	uint8_t  shift, byteIdx, bits;
+
+	value = 0;
+	shift = 0;
+	byteIdx = 0;
+
+	while (num_bits) {
+		bits = MIN(num_bits, 8 - bit_offs);
+		value |= ((data[byteIdx] >> bit_offs) & BIT_MASK(bits)) << shift;
+		shift += bits;
+		num_bits -= bits;
+		bit_offs = 0;
+		byteIdx++;
+	}
+
+	return value;
 }

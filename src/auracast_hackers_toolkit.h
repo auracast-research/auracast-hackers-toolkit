@@ -57,9 +57,9 @@ struct broadcast {
 
 /* this is taken from pdu.h to work without pdu_biginfo struct definition */
 #define PDU_BIG_INFO_SPACING_GET(bi) \
-	util_get_bits(bi+8, 0, 20)
+	_util_get_bits(bi+8, 0, 20)
 #define PDU_BIG_INFO_SUB_INTERVAL_GET(bi) \
-	util_get_bits(bi+5, 0, 20)
+	_util_get_bits(bi+5, 0, 20)
 
 // Scan Commands
 int scan_on(const struct shell *sh, size_t argc, char **argv);
@@ -90,3 +90,4 @@ struct broadcast *get_active_broadcast();
 
 bool is_substring(const char *substr, const char *str);
 const char *phy2str(uint8_t phy);
+uint32_t _util_get_bits(uint8_t *data, uint8_t bit_offs, uint8_t num_bits);
