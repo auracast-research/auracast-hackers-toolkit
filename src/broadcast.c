@@ -49,10 +49,10 @@ void iso_raw_dump_cb(struct net_buf *buf) {
 	if (evt->type == BT_HCI_EVT_ISO_RAW_DUMP_PDU) {
 		// Only log packets that carry data (header is 2 bytes)
 		if (evt->payload_number % print_interval == 0) {
-		    printk("PDU %lld, %d, %s\r\n", evt->payload_number, evt->len, hexout);
+		    printk("PDU %lld,%d,%s\r\n", evt->payload_number, evt->len, hexout);
 		}
 	} else if (evt->type == BT_HCI_EVT_ISO_RAW_DUMP_BIG) {
-		printk("BIGInfo %d, %s\r\n", evt->len, hexout);
+		printk("BIGInfo %d,%s\r\n", evt->len, hexout);
         k_sem_give(&sem_biginfo);
 	}
 }
