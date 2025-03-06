@@ -48,7 +48,7 @@ Then flash as described above.
 **nRF5340 Audio DK**
 
 ```
-west build -b nrf5340_audio_dk_nrf5340_cpuapp --sysbuild -- -DOVERLAY_CONFIG=overlay-bt_ll_sw_split.conf
+west build -b nrf5340_audio_dk/nrf5340/cpuapp --sysbuild -- -DOVERLAY_CONFIG=overlay-bt_ll_sw_split.conf
 ```
 
 Flashing is easy, just run:
@@ -89,3 +89,4 @@ picocom /dev/ttyUSB0 -b 115200 -g pdu_log.txt
 ```
 
 [ˆ1]: Not entirely raw, the PDUs will already be ordered and not contain retransmissions or pretransmissions.
+
