@@ -1,0 +1,14 @@
+manifest:
+  self:
+    path: auracast-hackers-toolkit
+
+  remotes:
+    - name: auracast-research
+      url-base: https://github.com/auracast-research
+
+  projects:
+    - name: zephyr
+      remote: auracast-research
+      repo-path: zephyr
+      revision: aht
+      import: true
