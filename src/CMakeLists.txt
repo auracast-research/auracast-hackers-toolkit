@@ -4,8 +4,12 @@ target_sources(app PRIVATE
 	main.c
 )
 
+# `scan` is the shared device-discovery + config front-end.
+# big_sync.c is the PA + BIG sync helper used by `bison sync` and
+# `bisquit start` 
 target_sources(app PRIVATE
 	scan.c
+	big_sync.c
 )
 
 # --- sniff subsystem ---------------------------------------------------
@@ -25,4 +29,14 @@ target_include_directories(app PRIVATE
 
 target_include_directories(app PRIVATE
 	${ZEPHYR_BASE}/subsys/bluetooth/controller/ll_sw/sniffer
+)
+
+# The BISON + bisquit CLI sources include internal Zephyr controller
+# headers (hal/ticker.h, pdu.h, lll/pdu_vendor.h, ...). 
+target_include_directories(app PRIVATE
+	${ZEPHYR_BASE}/subsys/bluetooth/controller
+	${ZEPHYR_BASE}/subsys/bluetooth/controller/ll_sw
+	${ZEPHYR_BASE}/subsys/bluetooth/controller/ll_sw/nordic
+	${ZEPHYR_BASE}/subsys/bluetooth/controller/ll_sw/nordic/lll
+	${ZEPHYR_BASE}/subsys/bluetooth/controller/ll_sw/bison
 )
