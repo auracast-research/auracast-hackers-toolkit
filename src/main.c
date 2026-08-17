@@ -1,153 +1,94 @@
-#include "auracast_hackers_toolkit.h"
+#include <zephyr/kernel.h>
+#include <zephyr/device.h>
+#include <zephyr/drivers/gpio.h>
+#include <zephyr/bluetooth/bluetooth.h>
+#include <zephyr/logging/log.h>
 
-bool bt_enabled = false;
-bool debug = false;
+#include "sniff/usbd_setup.h"
+#include "sniff/usb_out.h"
+#include "sniff/framing.h"
+#include "sniff/bis_sink.h"
+#include "sniff/cli.h"
+#include "sniff/ll_capture.h"
 
-static struct shell *gshell;
-struct broadcast *active_broadcast = NULL;
-uint32_t broadcaster_broadcast_id;
+#include "scan.h"
+#include "big_sync.h"
 
-static int init(const struct shell *sh, size_t argc, char **argv) {
+#include "clone.h"
 
-	ARG_UNUSED(argc);
-    ARG_UNUSED(argv);
+LOG_MODULE_REGISTER(aht_main, LOG_LEVEL_INF);
 
+#define LED0_NODE DT_ALIAS(led0)
+#if DT_NODE_HAS_STATUS(LED0_NODE, okay)
+static const struct gpio_dt_spec led = GPIO_DT_SPEC_GET(LED0_NODE, gpios);
+#define HAS_LED 1
+#endif
+
+int main(void)
+{
 	int err;
 
-	if (bt_enabled) {
-		shell_error(sh, "Bluetooth is already initialized!");
-		return 1;
+#ifdef HAS_LED
+	if (gpio_is_ready_dt(&led)) {
+		gpio_pin_configure_dt(&led, GPIO_OUTPUT_ACTIVE);
+	}
+#endif
+
+	err = sniffer_usbd_enable();
+	if (err != 0 && err != -EALREADY) {
+		LOG_ERR("usbd_enable: %d", err);
+		return 0;
+	}
+
+	/* Give the host a moment to open both CDC-ACM ports (extcap +
+	 * shell) so first log lines aren't lost. */
+	k_sleep(K_MSEC(1500));
+
+	LOG_INF("Auracast Hacker's Toolkit starting");
+
+	err = sniffer_usb_out_init();
+	if (err) {
+		LOG_ERR("usb_out init: %d", err);
+	}
+
+	err = sniffer_framing_init();
+	if (err) {
+		LOG_ERR("framing init: %d", err);
 	}
 
 	err = bt_enable(NULL);
 	if (err) {
-		shell_print(sh, "Bluetooth enable failed (err %d)", err);
-		return err;
+		LOG_ERR("bt_enable: %d", err);
+		return 0;
 	}
 
-	shell_print(sh, "Bluetooth initialized");
+	(void)sniffer_scan_init();
+	(void)big_sync_init();
 
-	// set global reference for shell - not sure if this is good practice
-	gshell = sh;
+	(void)sniffer_bis_sink_init();
+	(void)sniffer_cli_init();
 
-	bt_enabled = true;
-	return 0;
-}
+	(void)sniffer_ll_capture_init();
+#if defined(CONFIG_BT_CTLR_SNIFFER_TAP)
+	LOG_INF("sniff: LLL tap active - pcap DLT = LINKTYPE_BLUETOOTH_LE_LL_WITH_PHDR (256)");
+#else
+	LOG_INF("sniff: LLL tap disabled - pcap DLT = LINKTYPE_BLUETOOTH_HCI_H4 (187)");
+#endif
 
-static int reset(const struct shell *sh, size_t argc, char **argv) {
-	ARG_UNUSED(argc);
-    ARG_UNUSED(argv);
+	(void)clone_init();
 
-	int err;
+	while (true) {
+		bool active = false;
 
-	shell_info(sh, "Resetting application.");
-
-	memset(broadcasts, 0x00, sizeof(broadcasts));
-	cur_bcast = 0;
-
-	broadcaster_broadcast_id = BT_BAP_INVALID_BROADCAST_ID;
-
-	return 0;
-}
-
-static uint16_t interval_to_sync_timeout(uint16_t pa_interval)
-{
-	uint16_t pa_timeout;
-
-	if (pa_interval == BT_BAP_PA_INTERVAL_UNKNOWN) {
-		/* Use maximum value to maximize chance of success */
-		pa_timeout = BT_GAP_PER_ADV_MAX_TIMEOUT;
-	} else {
-		uint32_t interval_ms;
-		uint32_t timeout;
-
-		/* Add retries and convert to unit in 10's of ms */
-		interval_ms = BT_GAP_PER_ADV_INTERVAL_TO_MS(pa_interval);
-		timeout = (interval_ms * PA_SYNC_INTERVAL_TO_TIMEOUT_RATIO) / 10;
-
-		/* Enforce restraints */
-		pa_timeout = CLAMP(timeout, BT_GAP_PER_ADV_MIN_TIMEOUT, BT_GAP_PER_ADV_MAX_TIMEOUT);
-	}
-
-	return pa_timeout;
-}
-
-void set_active_broadcast_prompt(struct broadcast *b) {
-	
-	int err;
-
-	active_broadcast = b;
-
-	if (gshell) {
-		char prompt[40];
-		snprintf(prompt, 40, "broadcast [ID=0x%x]:~$ ", b->broadcast_id);
-		err = shell_prompt_change(gshell, prompt);
-		if (err) {
-			printk("error setting shell prompt: %d\n", err);
+		active = active || sniffer_bis_sink_is_active();
+		active = active || big_sync_is_active();
+		active = active || clone_is_active();
+#ifdef HAS_LED
+		if (gpio_is_ready_dt(&led)) {
+			gpio_pin_toggle_dt(&led);
 		}
+#endif
+		k_sleep(K_MSEC(active ? 200 : 500));
 	}
+	return 0;
 }
-
-void remove_active_broadcast_prompt() {
-	active_broadcast = NULL;
-
-	if (gshell) {
-		shell_prompt_change(gshell, "auracast-hackers-toolkit:~$ ");
-	}
-}
-
-struct broadcast *get_active_broadcast() {
-	return active_broadcast;
-}
-
-int debug_on(const struct shell *sh, size_t argc, char **argv) {
-    ARG_UNUSED(argc);
-    ARG_UNUSED(argv);
-    ARG_UNUSED(sh);
-	debug = true;
-	shell_print(sh, "Debug output enabled");
-}
-
-int debug_off(const struct shell *sh, size_t argc, char **argv) {
-    ARG_UNUSED(argc);
-    ARG_UNUSED(argv);
-    ARG_UNUSED(sh);
-	debug = false;
-	shell_print(sh, "Debug output disabled");
-}
-
-int debug_handler(const struct shell *sh, size_t argc, char **argv) {
-    ARG_UNUSED(argc);
-    ARG_UNUSED(argv);
-	shell_print(sh, "Debug is %s", debug ? "enabled" : "disabled");
-}
-
-SHELL_STATIC_SUBCMD_SET_CREATE(sub_scan,
-        SHELL_CMD(on, NULL, "Start scanning.", scan_on),
-        SHELL_CMD(off, NULL, "Stop scanning.", scan_off),
-        SHELL_CMD(biginfo, NULL, "Obtain BIGInfo for all broadcasts or a given broadcast.", scan_biginfo),
-        SHELL_CMD(list, NULL, "List scanned broadcasts.", scan_list),
-        SHELL_SUBCMD_SET_END
-);
-
-SHELL_STATIC_SUBCMD_SET_CREATE(sub_broadcast,
-        SHELL_CMD(list, NULL, "List scanned broadcasts.", broadcast_list),
-        SHELL_CMD(dump, NULL, "Dump Raw BIS PDUs and BIGInfo packets.", broadcast_dump),
-        SHELL_CMD(bisquit, NULL, "Run the bisquit attack against broadcast", broadcast_bisquit),
-        SHELL_CMD(hijack, NULL, "Hijack broadcast", broadcast_hijack),
-        SHELL_SUBCMD_SET_END
-);
-
-SHELL_STATIC_SUBCMD_SET_CREATE(sub_debug,
-        SHELL_CMD(on, NULL, "Debug on.", debug_on),
-        SHELL_CMD(off, NULL, "Debug off.", debug_off),
-        SHELL_SUBCMD_SET_END
-);
-
-SHELL_CMD_REGISTER(init, NULL, "Initialize Bluetooth", init);
-SHELL_CMD_REGISTER(reset, NULL, "Reset Application (not controller)", reset);
-SHELL_CMD_REGISTER(scan, &sub_scan, "Scan for Auracast Broadcasts", NULL);
-SHELL_CMD_REGISTER(broadcast, &sub_broadcast, "Broadcast commands", NULL);
-SHELL_CMD_REGISTER(debug, &sub_debug, "Debug Options (on/off)", debug_handler);
-
-int main(void) {}
