@@ -69,11 +69,7 @@ int main(void)
 	(void)sniffer_cli_init();
 
 	(void)sniffer_ll_capture_init();
-#if defined(CONFIG_BT_CTLR_SNIFFER_TAP)
 	LOG_INF("sniff: LLL tap active - pcap DLT = LINKTYPE_BLUETOOTH_LE_LL_WITH_PHDR (256)");
-#else
-	LOG_INF("sniff: LLL tap disabled - pcap DLT = LINKTYPE_BLUETOOTH_HCI_H4 (187)");
-#endif
 
 	(void)clone_init();
 
