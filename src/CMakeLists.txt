@@ -10,6 +10,8 @@ target_sources(app PRIVATE
 
 # --- sniff subsystem ---------------------------------------------------
 target_sources(app PRIVATE
+	sniff/bis_sink.c
+	sniff/cli.c
 	sniff/framing.c
 	sniff/ll_capture.c
 	sniff/usbd_setup.c
