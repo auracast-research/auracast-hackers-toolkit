@@ -36,6 +36,12 @@ target_sources(app PRIVATE
 	bisquit/cli.c
 )
 
+# --- clone subsystem ---------------------------------------------------
+target_sources(app PRIVATE
+	clone.c
+	clone_cli.c
+)
+
 target_include_directories(app PRIVATE
 	.
 	sniff
