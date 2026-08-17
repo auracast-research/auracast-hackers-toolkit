@@ -22,9 +22,18 @@ target_sources(app PRIVATE
 	sniff/usb_out.c
 )
 
+# --- bison subsystem ---------------------------------------------------
+# The BISON LL machinery (bison_lll_hijack, bison_tx, bison_sniff, ...)
+# lives in the Zephyr fork at subsys/bluetooth/controller/ll_sw/bison/.
+# Only the shell front-end lives here.
+target_sources(app PRIVATE
+	bison/cli.c
+)
+
 target_include_directories(app PRIVATE
 	.
 	sniff
+	bison
 )
 
 target_include_directories(app PRIVATE
