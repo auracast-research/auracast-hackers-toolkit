@@ -1,92 +1,122 @@
 # Auracast Hacker's Toolkit
 
-This requires our [Zephyr Fork](https://github.com/auracast-research/zephyr) due to patches in the Bluetooth Link Layer.
+This is a Zephyr-based security research toolkit for Bluetooth Auracast to do passive sniffing,
+active BIS hijack (the [BISON attack](https://www.carloalbertoboano.com/documents/gasteiger23bison.pdf)),
+encrypted-stream DoS ([BISQuit attack](TODO)), and broadcast cloning (WIP).
+Built for the [nRF52840 USB Dongle](https://www.nordicsemi.com/Products/Development-hardware/nRF52840-Dongle).
 
-## Precompiled Builds
-
-We provide builds for the [nRF5340 Audio Devkit](https://www.nordicsemi.com/Products/Development-hardware/nRF5340-Audio-DK) and the [nRF52480](https://www.nordicsemi.com/Products/Development-hardware/nRF52840-Dongle). Head over to the [Releases](https://github.com/auracast-research/auracast-hackers-toolkit/releases) page to download them.
-
-**nRF52480 USB Dongle**
-
-The dongle has a built-in USB bootloader, which makes it a bit annoying to flash the firmware. Follow the instructions over at the [Zephyr documentation](https://docs.zephyrproject.org/latest/boards/nordic/nrf52840dongle/doc/index.html#option-1-using-the-built-in-bootloader-only). You'll need the legacy version of Nordic's [nrfutil](https://github.com/NordicSemiconductor/pc-nrfutil) for this to work.
-
-**nRF5340 Audio DK**
-
-The nRF5340 devkit requires two firmware files to be flashed. You'll also need the [nRF Command Line Tools](https://www.nordicsemi.com/Products/Development-tools/nRF-Command-Line-Tools) to flash the firmware files. You can then flash the FW as follows:
-
-```
-# erase current FW
-nrfjprog --eraseall
-# flash host FW
-nrfjprog --program host.hex --verify
-# flash controller FW to network coprocessor
-nrfjprog --program controller.hex --coprocessor CP_NETWORK --verify
-```
+This requires our [Zephyr Fork](https://github.com/auracast-research/zephyr)
+due to patches in the Bluetooth Link Layer.
 
 ## Installation and Setup
 
-If you want to build the Auracast Hacker's Toolkit yourself, you'll need to set up a Zephyr development environment. Which is pretty straight forward if you just follow the steps, but it does take some time and disk space.
+If you want to build the Auracast Hacker's Toolkit yourself, you'll
+need to set up a Zephyr development environment. Which is pretty
+straight forward if you just follow the steps, but it does take some
+time (and disk space). You'll also need Zephyr SDK 1.0 or newer, Python
+3, `west`, `nrfutil`, Wireshark, and an nRF52840 USB Dongle.
 
-Follow the steps in the [Zephyr Getting Started Guide](https://docs.zephyrproject.org/latest/develop/getting_started/index.html), but when running `west init`, you'll need to specify our Zephyr fork with the link layer patches. So instead, you should run:
-
-```
-west init ~/zephyrproject -m git@github.com:auracast-research/zephyr.git
-```
-
-If you have it all set up, you should be able to run `west build` inside this repository's root directory. Make sure to have set the correct virtualenv and your `ZEPHYR_BASE` environment variable is set to the Zephyr directory you just created.
-
-Depending on the devkit you can now build the firmware.
-
-**nRF52480 USB Dongle**
+Follow the steps in the [Zephyr Getting Started Guide](https://docs.zephyrproject.org/latest/develop/getting_started/index.html).
+The manifest in this repository pulls the fork automatically, so you
+can just run:
 
 ```
-west build -b nrf52840dongle/nrf52840
+git clone https://github.com/auracast-research/auracast-hackers-toolkit.git
+cd auracast-hackers-toolkit
+west init -l .
+west update
+west zephyr-export
+pip install -r zephyr/scripts/requirements.txt
 ```
 
-Then flash as described above.
-
-**nRF5340 Audio DK**
-
-```
-west build -b nrf5340_audio_dk/nrf5340/cpuapp --sysbuild -- -DOVERLAY_CONFIG=overlay-bt_ll_sw_split.conf
-```
-
-Flashing is easy, just run:
+If you have it all set up, you should be able to run `west build`
+inside this repository's root directory. Make sure to have set the
+correct virtualenv and your `ZEPHYR_BASE` environment variable:
 
 ```
-west flash
+west build -p always -b nrf52840dongle/nrf52840
 ```
 
-This will flash both the application and the network core.
+Then flash the firmware over the dongle's built-in USB bootloader.
+You'll need the legacy version of Nordic's
+[nrfutil](https://github.com/NordicSemiconductor/pc-nrfutil) for this
+to work:
 
+```
+nrfutil pkg generate --hw-version 52 --sd-req=0x00 \
+        --application build/zephyr/zephyr.hex --application-version 1 \
+        toolkit.zip
+nrfutil dfu usb-serial -pkg toolkit.zip -p /dev/ttyACM<bootloader>
+```
 
 ## Usage
 
-Connect the board to your computer and attach to the board's serial interface. If you're using the nRF5340 devkit, two TTYs will appear. Use the first one.
+Connect the dongle to your computer. You'll get two serial devices:
+attach to the first one This is the CLI, the other carries the capture data.
 
-You can use picocom (or whatever tool you prefer) to connect to the interface with `115200` baud.
 ```
-picocom /dev/ttyUSB0 -b 115200
+picocom /dev/ttyACM0
 ```
-
-Whenever you insert or reboot the board, you'll have to initialize the Bluetooth stack by running `init`!
 
 **Scanning for Auracast Broadcasts**
 
 1. Start scanning: `scan on`.
-1. Once broadcasts are discovered, you can gather more information about them by running `scan biginfo`. This command will sync to the advertiser's periodic advertisements and gather the BIGInfo packet.
-1. You can view the gathered information by running `broadcast list`.
+2. View the discovered broadcasts with `scan list` (`scan clear` to empty).
+3. `scan biginfo` syncs to the advertiser's periodic advertisements
+   and dumps the BIGInfo packet without establishing a BIG sync.
+4. `scan bcode <target> <hex>` sets the Broadcast_Code for an encrypted BIG.
 
-**Dumping Raw BIS PDUs**
+All the commands below take an optional `<target>` argument which
+looks up a candidate from the scan list by index, address, or name
+substring. Leave it out to use the first entry.
 
-1. Run `broadcast list` and choose your target stream.
-2. Run `broadcast dump $INDEX` and reference the targeted broadcast by its index.
+**Sniffing a Broadcast**
 
-It will now dump raw BIS PDUs[ˆ1] and raw BIGInfo payloads. If you want to use these packets (e.g. with [BISCracker](https://github.com/auracast-research/biscrack)), you can start picocom so that it dumps all output to a file:
+1. `sniff start` locks onto a broadcaster and establishes a BIG sync; `sniff stop` stops it.
+2. The captured PDUs are streamed to the second serial device. Point
+   Wireshark's extcap (`extcap/auracast_extcap.py`) on that device
+   and pick the DLT matching your mode: `sniff mode m2` (the default)
+   streams raw LL PDUs as `BLUETOOTH_LE_LL_WITH_PHDR`, `sniff mode
+   m1` streams reassembled HCI ISO Data as `BLUETOOTH_HCI_H4`.
+  
+- `sniff raw` captures an encrypted BIG without a Broadcast_Code and forwards the ciphertext instead of the decrypted payload.
+- `sniff greedy on` turns on greedy mode: sniffer tries to capture all subevents, including all pre- and retransmissions.
+- `sniff payload_omit on` drops PDU payloads: can be helpful if payload is not important and a lot of packet loss is observed.
 
-```
-picocom /dev/ttyUSB0 -b 115200 -g pdu_log.txt
-```
+**BISQuit: DoS via MIC Failure**
 
-[ˆ1]: Not entirely raw, the PDUs will already be ordered and not contain retransmissions or pretransmissions.
+BISQuit floods every data subevent of an encrypted BIS with random
+ciphertext and a random MIC, so a receiver in range fails its MIC
+check and drops its BIG sync.
 
+1. `bisquit start` syncs to the target, and starts the flood.
+2. `bisquit stop` stops the flood and tears everything down.
+
+**BISON: BIS Hijack**
+
+BISON injects forged BIS PDUs on top of a real broadcast, timed to
+the real broadcaster's subevents. This is a partial reimplementation 
+of the original [BISON PoC](https://github.com/TuGraz-ITI/zephyr) to 
+also support moden Auracast configurations, such as interleaved packing
+or multiple subevents.
+
+- `bison sync` takes a passive snapshot of the target's BIG
+   parameters - required before any injection.
+- `bison tx <evt_offset> <bis> <intra_se> <llid> [hex_pdu]`
+   schedules a single forged data PDU. `bison ctrl`, and `bison ctrl_loop` (with `bison ctrl_stop`) inject
+   BIG Control PDUs instead.
+- `bison early [<us>]` biases the injection earlier to win the
+   capture effect (10-50us works well).
+- `bison status` shows the snapshot and TX counters; `bison unsync`
+   tears it down.
+
+**Clone**
+
+> This is currently WIP and does not properly work yet.
+
+Clone reads the target's identity and BIGInfo and rebroadcasts it as
+its own BIG with a fixed filler payload. Essentially a fake broadcast under the
+same identity.
+
+1. `clone start` start the clone (at 2x the target's PA rate).
+2. `clone stop` tears it down, `clone status` shows its state.
