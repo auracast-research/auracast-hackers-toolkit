@@ -1,2 +1,23 @@
 build/
-app.zip
+zephyr/
+modules/
+tools/
+bootloader/
+.west/
+
+# nrfutil DFU package outputs
+*.zip
+
+# scripts and captures during dev
+make.sh
+*.pcap
+*.pcapng
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+__pycache__/
