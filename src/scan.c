@@ -1,297 +1,534 @@
-#include "auracast_hackers_toolkit.h"
+#include "scan.h"
+#include "big_sync.h"
 
-K_SEM_DEFINE(sem_biginfo, 0U, 1U);
+#include <stdlib.h>
+#include <string.h>
 
-struct broadcast broadcasts[BROADCAST_LIST_MAX_LEN];
-uint8_t cur_bcast = 0;
+#include <zephyr/kernel.h>
+#include <zephyr/bluetooth/bluetooth.h>
+#include <zephyr/bluetooth/conn.h>
+#include <zephyr/bluetooth/gap.h>
+#include <zephyr/net_buf.h>
+#include <zephyr/sys/byteorder.h>
+#include <zephyr/logging/log.h>
+#include <zephyr/shell/shell.h>
 
-static uint32_t tmp_sub_interval = 0;
-static uint32_t tmp_bis_spacing = 0;
+LOG_MODULE_REGISTER(sniffer_scan, LOG_LEVEL_INF);
 
-void scan_raw_get_biginfo_cb(struct net_buf *buf) {
+#define MAX_CANDIDATES 8
 
-	struct bt_hci_evt_iso_raw_dump *evt = (void *)buf->data;
-	if (evt->type == BT_HCI_EVT_ISO_RAW_DUMP_BIG) {
-        uint8_t *binfo = (buf->data + sizeof(*evt));
+static struct sniffer_candidate cands[MAX_CANDIDATES];
+static struct k_mutex cands_mu;
+static bool scan_active;
 
-		/* We can't easily corelate raw PDU with sender addr so we store the values in a global
-		 * variable and release the semaphore. the waiting function can then do the storage of
-		 * the values. Awesome. */
-		tmp_sub_interval = PDU_BIG_INFO_SUB_INTERVAL_GET(binfo);
-		tmp_bis_spacing = PDU_BIG_INFO_SPACING_GET(binfo);
-		k_sem_give(&sem_biginfo);
-	}
-}
-
-int pa_sync_create(struct broadcast *b) {
-    uint32_t interval = BT_CONN_INTERVAL_TO_US(b->broadcaster_info.interval);
-	struct bt_le_per_adv_sync_param create_params = {0};
-
-	bt_addr_le_copy(&create_params.addr, &b->broadcaster_addr);
-	create_params.options = 0;
-	create_params.sid = b->broadcaster_info.sid;
-	create_params.skip = 0;
-    // retry 5 times
-	create_params.timeout = (interval * 5) / (10 * USEC_PER_MSEC);
-
-	return bt_le_per_adv_sync_create(&create_params, &b->broadcast_sync);
-}
-
-static void sync_cb(struct bt_le_per_adv_sync *sync, struct bt_le_per_adv_sync_synced_info *info) {
-	char le_addr[BT_ADDR_LE_STR_LEN];
-
-	bt_addr_le_to_str(info->addr, le_addr, sizeof(le_addr));
-
-	debug_printk("PER_ADV_SYNC[%u]: [DEVICE]: %s synced, "
-	       "Interval 0x%04x (%u ms), PHY %s\n",
-	       bt_le_per_adv_sync_get_index(sync), le_addr,
-	       info->interval, info->interval * 5 / 4, phy2str(info->phy));
-}
-
-static void term_cb(struct bt_le_per_adv_sync *sync, const struct bt_le_per_adv_sync_term_info *info) {
-	char le_addr[BT_ADDR_LE_STR_LEN];
-
-	bt_addr_le_to_str(info->addr, le_addr, sizeof(le_addr));
-
-	debug_printk("PER_ADV_SYNC[%u]: [DEVICE]: %s sync terminated\n",
-	       bt_le_per_adv_sync_get_index(sync), le_addr);
-}
-
-static void recv_cb(struct bt_le_per_adv_sync *sync, const struct bt_le_per_adv_sync_recv_info *info, struct net_buf_simple *buf) {
-	char le_addr[BT_ADDR_LE_STR_LEN];
-	char data_str[129];
-
-	bt_addr_le_to_str(info->addr, le_addr, sizeof(le_addr));
-	bin2hex(buf->data, buf->len, data_str, sizeof(data_str));
-
-	debug_printk("PER_ADV_SYNC[%u]: [DEVICE]: %s, tx_power %i, "
-	       "RSSI %i, CTE %u, data length %u, data: %s\n",
-	       bt_le_per_adv_sync_get_index(sync), le_addr, info->tx_power,
-	       info->rssi, info->cte_type, buf->len, data_str);
-}
-
-static void biginfo_cb(struct bt_le_per_adv_sync *sync, const struct bt_iso_biginfo *biginfo) {
-	char le_addr[BT_ADDR_LE_STR_LEN];
-
-	bt_addr_le_to_str(biginfo->addr, le_addr, sizeof(le_addr));
-
-	debug_printk("BIG INFO[%u]: [DEVICE]: %s, sid 0x%02x, "
-	       "num_bis %u, nse %u, interval 0x%04x (%u ms), "
-	       "bn %u, pto %u, irc %u, max_pdu %u, "
-	       "sdu_interval %u us, max_sdu %u, phy %s, "
-	       "%s framing, %sencrypted\n",
-	       bt_le_per_adv_sync_get_index(sync), le_addr, biginfo->sid,
-	       biginfo->num_bis, biginfo->sub_evt_count,
-	       biginfo->iso_interval,
-	       (biginfo->iso_interval * 5 / 4),
-	       biginfo->burst_number, biginfo->offset,
-	       biginfo->rep_count, biginfo->max_pdu, biginfo->sdu_interval,
-	       biginfo->max_sdu, phy2str(biginfo->phy),
-	       biginfo->framing ? "with" : "without",
-	       biginfo->encryption ? "" : "not ");
-
-    struct broadcast *b = get_broadcast_with_addr(biginfo->addr);
-    if (b) {
-        memcpy(&b->biginfo, biginfo, sizeof(*biginfo));
-        b->has_biginfo = true;
-    }
-}
-
-static struct bt_le_per_adv_sync_cb sync_callbacks = {
-	.synced = sync_cb,
-	.term = term_cb,
-	.recv = recv_cb,
-	.biginfo = biginfo_cb,
+struct parsed_ext_adv {
+	char     name[SNIFFER_CAND_NAME_MAX];
+	uint32_t broadcast_id;
+	bool     has_broadcast_id;
 };
 
-static bool scan_get_broadcaster_name(struct bt_data *data, void *user_data) {
-    char *name_out = user_data;
+/* Auracast Broadcast Audio Announcement Service Data: 2-byte UUID
+ * (0x1852) followed by a 3-byte broadcast_id. Anything else is
+ * ignored.
+ */
+#define BT_UUID_BROADCAST_AUDIO_VAL 0x1852U
 
-	// this is the official broadcast name
-	if (data->type == BT_DATA_BROADCAST_NAME) {
-		strncpy(name_out, data->data, MIN(data->data_len, BROADCAST_MAX_NAME_LEN - 1));
-        debug_printk("broadcast_name=%s\n", name_out);
-		return false; // we found the name, stop parsing
-	}
+static bool ext_adv_parser(struct bt_data *data, void *user_data)
+{
+	struct parsed_ext_adv *p = user_data;
+	size_t len;
 
-	// this supports non-audio ISO broadcasts
-	if (data->type == BT_DATA_NAME_COMPLETE || data->type == BT_DATA_NAME_SHORTENED) {
-		strncpy(name_out, data->data, MIN(data->data_len, BROADCAST_MAX_NAME_LEN - 1));
-        debug_printk("bt name=%s\n", name_out);
-		return false;
+	switch (data->type) {
+	case BT_DATA_NAME_SHORTENED:
+	case BT_DATA_NAME_COMPLETE:
+	case BT_DATA_BROADCAST_NAME:  /* we need to check all these types for the name */
+		if (p->name[0] != '\0') {
+			/* Keep the first name we see, broadcast name
+			 * prioritized over local name if both appear */
+			break;
+		}
+		len = MIN(data->data_len, SNIFFER_CAND_NAME_MAX - 1);
+		memcpy(p->name, data->data, len);
+		p->name[len] = '\0';
+		break;
+	case BT_DATA_SVC_DATA16:
+		if (data->data_len < 5U) {
+			break;
+		}
+		{
+			uint16_t uuid = sys_get_le16(data->data);
+
+			if (uuid != BT_UUID_BROADCAST_AUDIO_VAL) {
+				break;
+			}
+			p->broadcast_id = sys_get_le24(data->data + 2);
+			p->has_broadcast_id = true;
+		}
+		break;
+	default:
+		break;
 	}
 	return true;
 }
 
-static bool scan_get_broadcast_id(struct bt_data *data, void *user_data) {
-    uint32_t *broadcast_id = user_data;
-	struct bt_uuid_16 adv_uuid;
+static struct sniffer_candidate *find_slot(const bt_addr_le_t *addr, uint8_t sid,
+					   bool *is_existing_match)
+{
+	*is_existing_match = false;
 
-    *broadcast_id = 0;
-
-	if (data->type != BT_DATA_SVC_DATA16) 
-		return true;
-
-	if (data->data_len < BT_UUID_SIZE_16 + BT_AUDIO_BROADCAST_ID_SIZE)
-		return true;
-
-	if (!bt_uuid_create(&adv_uuid.uuid, data->data, BT_UUID_SIZE_16))
-		return true;
-
-	if (bt_uuid_cmp(&adv_uuid.uuid, BT_UUID_BROADCAST_AUDIO))
-		return true;
-	
-	*broadcast_id = sys_get_le24(data->data + BT_UUID_SIZE_16);
-    debug_printk("broadcast_id=%d\n", *broadcast_id);
-	return false; // stop parsing
-}
-
-static struct broadcast* new_broadcast(uint32_t broadcast_id) {
-    // initialize new broadcaster with ID
-    if (cur_bcast < ARRAY_SIZE(broadcasts) - 1) {
-		struct broadcast *b = &broadcasts[cur_bcast];
-        cur_bcast++;
-		return b;
-    }
-
-    printk("ERROR: can't store any more broadcasts. Try to increase BROADCAST_LIST_MAX_LEN.\n");
-    return NULL;
-}
-
-static void broadcast_scan_recv(const struct bt_le_scan_recv_info *info, struct net_buf_simple *ad) {
-
-    uint32_t broadcast_id = 0;
- 	struct net_buf_simple buf_copy;
-    char le_addr[BT_ADDR_LE_STR_LEN];
-
-	net_buf_simple_clone(ad, &buf_copy);
-
-	// we have a periodic advertiser
-	if (info->interval) {
-		bt_data_parse(&buf_copy, scan_get_broadcast_id, &broadcast_id);
-		// if we know the broadcast already, we update the information
-		struct broadcast *b = get_broadcast_with_addr(info->addr);
-		// if we don't know it, we create a new broadcast
-		if (b == NULL) {
-			b = new_broadcast(broadcast_id);
-
-			if (b == NULL) {
-				printk("Yikes! We ran out of space for new broadcasts. Please increase BROADCAST_LIST_MAX_LEN\n");
-				return 1;
-			}
-
-			bt_addr_le_to_str(info->addr, le_addr, sizeof(le_addr));
-			printk("Found new broadcaster with ID 0x%06X and addr %s and sid 0x%02X\n", broadcast_id,
-			le_addr, info->sid);
+	for (int i = 0; i < MAX_CANDIDATES; i++) {
+		if (cands[i].valid && cands[i].sid == sid &&
+		    bt_addr_le_cmp(&cands[i].addr, addr) == 0) {
+			*is_existing_match = true;
+			return &cands[i];
 		}
-
-		// Store info for PA sync parameters
-		memcpy(&b->broadcaster_info, info, sizeof(*info));
-		bt_addr_le_copy(&b->broadcaster_addr, info->addr);
-		b->broadcast_id = broadcast_id;
-
-		net_buf_simple_clone(ad, &buf_copy);
-		bt_data_parse(&buf_copy, scan_get_broadcaster_name, b->broadcaster_name);
-
-		b->found = true;
 	}
+	for (int i = 0; i < MAX_CANDIDATES; i++) {
+		if (!cands[i].valid) {
+			return &cands[i];
+		}
+	}
+	int idx = 0;
+	int8_t weakest = INT8_MAX;
+	for (int i = 0; i < MAX_CANDIDATES; i++) {
+		if (cands[i].rssi < weakest) {
+			weakest = cands[i].rssi;
+			idx = i;
+		}
+	}
+	return &cands[idx];
 }
 
-static void scan_get_biginfo_for_broadcast(struct broadcast *b) {
+static void scan_recv(const struct bt_le_scan_recv_info *info,
+		      struct net_buf_simple *buf)
+{
+	/* We only care about ext-adv PDUs that advertise a periodic
+	 * interval. */
+	if (info->interval == 0U) {
+		return;
+	}
 
-    int err;
+	struct parsed_ext_adv p = {0};
 
-    printk("Trying to obtain BIGInfo for broadcast %s (0x%x)\n", b->broadcaster_name, b->broadcast_id);
+	bt_data_parse(buf, ext_adv_parser, &p);
 
-	bt_hci_iso_raw_dump_cb_register(scan_raw_get_biginfo_cb);
+	k_mutex_lock(&cands_mu, K_FOREVER);
+	bool is_existing;
+	struct sniffer_candidate *slot = find_slot(info->addr, info->sid, &is_existing);
 
-    err = pa_sync_create(b);
-    if (err) {
-        printk("Error syncing to periodic advertisments (0x%x)\n", err);
-    }
+	uint8_t saved_bcode[SNIFFER_CAND_BCODE_MAX];
+	uint8_t saved_bcode_len = 0U;
 
-    err = k_sem_take(&sem_biginfo, SEM_TIMEOUT);
-    if (err) {
-        printk("Error: Timeout in getting BIGInfo for stream %s(0x%x)\n", b->broadcaster_name, b->broadcast_id);
-    }
+	if (is_existing) {
+		memcpy(saved_bcode, slot->bcode, sizeof(saved_bcode));
+		saved_bcode_len = slot->bcode_len;
+	}
 
-	b->sub_interval = tmp_sub_interval;
-	b->bis_spacing = tmp_bis_spacing;
-
-    bt_le_per_adv_sync_delete(b->broadcast_sync);
-	bt_hci_iso_raw_dump_cb_register(NULL);
+	memset(slot, 0, sizeof(*slot));
+	slot->valid          = true;
+	slot->sid            = info->sid;
+	slot->rssi           = info->rssi;
+	slot->pa_interval_us = BT_CONN_INTERVAL_TO_US(info->interval);
+	bt_addr_le_copy(&slot->addr, info->addr);
+	if (p.name[0] != '\0') {
+		memcpy(slot->name, p.name, sizeof(slot->name));
+	}
+	if (p.has_broadcast_id) {
+		slot->broadcast_id     = p.broadcast_id;
+		slot->has_broadcast_id = true;
+	}
+	if (saved_bcode_len > 0U) {
+		memcpy(slot->bcode, saved_bcode, sizeof(saved_bcode));
+		slot->bcode_len = saved_bcode_len;
+	}
+	k_mutex_unlock(&cands_mu);
 }
 
-static struct bt_le_scan_cb le_scan_cb = {
-	.recv = broadcast_scan_recv,
+static struct bt_le_scan_cb scan_cb = {
+	.recv = scan_recv,
 };
 
-int scan_on(const struct shell *sh, size_t argc, char **argv) {
-    ARG_UNUSED(argc);
-    ARG_UNUSED(argv);
+int sniffer_scan_init(void)
+{
+	k_mutex_init(&cands_mu);
+	bt_le_scan_cb_register(&scan_cb);
+	return 0;
+}
 
-	int err;
-
-	if (!bt_enabled) {
-		shell_error(sh, "Bluetooth is not initialized yet, run `init` first!");
-		return 1;
-	}
-
-	bt_le_scan_cb_register(&le_scan_cb);
-
-    err = bt_le_scan_start(BT_LE_SCAN_ACTIVE, NULL);
-	if (err != 0 && err != -EALREADY) {
-		shell_print(sh, "Unable to start scanning: %d", err);
+int sniffer_scan_start(void)
+{
+	if (scan_active) {
 		return 0;
 	}
 
-    return 0;
+	struct bt_le_scan_param params = {
+		.type       = BT_LE_SCAN_TYPE_ACTIVE,
+		.options    = BT_LE_SCAN_OPT_NONE,
+		.interval   = BT_GAP_SCAN_FAST_INTERVAL,
+		.window     = BT_GAP_SCAN_FAST_WINDOW,
+	};
+
+	int err = bt_le_scan_start(&params, NULL);
+	if (err == 0) {
+		scan_active = true;
+	}
+	return err;
 }
 
-int scan_off(const struct shell *sh, size_t argc, char **argv) {
-    ARG_UNUSED(argc);
-    ARG_UNUSED(argv);
+int sniffer_scan_stop(void)
+{
+	if (!scan_active) {
+		return 0;
+	}
+	int err = bt_le_scan_stop();
+	if (err == 0) {
+		scan_active = false;
+	}
+	return err;
+}
 
-	int err;
+bool sniffer_scan_is_active(void)
+{
+	return scan_active;
+}
 
-	err = bt_le_scan_stop();
-	if (err != 0) {
-		shell_print(sh, "bt_le_scan_stop failed with %d, resetting", err);
+size_t sniffer_scan_get_candidates(struct sniffer_candidate *out, size_t max)
+{
+	size_t n = 0;
+
+	k_mutex_lock(&cands_mu, K_FOREVER);
+	for (int i = 0; i < MAX_CANDIDATES && n < max; i++) {
+		if (cands[i].valid) {
+			out[n++] = cands[i];
+		}
+	}
+	k_mutex_unlock(&cands_mu);
+	return n;
+}
+
+void sniffer_scan_clear_candidates(void)
+{
+	k_mutex_lock(&cands_mu, K_FOREVER);
+	memset(cands, 0, sizeof(cands));
+	k_mutex_unlock(&cands_mu);
+}
+
+static bool addr_match_by_bytes(const bt_addr_le_t *a, const bt_addr_le_t *b)
+{
+	return memcmp(a->a.val, b->a.val, sizeof(a->a.val)) == 0;
+}
+
+static struct sniffer_candidate *nth_valid_locked(size_t n)
+{
+	size_t count = 0U;
+
+	for (int i = 0; i < MAX_CANDIDATES; i++) {
+		if (cands[i].valid) {
+			if (count == n) {
+				return &cands[i];
+			}
+			count++;
+		}
+	}
+	return NULL;
+}
+
+static struct sniffer_candidate *lookup_locked(const char *tok)
+{
+	if (tok == NULL) {
+		return nth_valid_locked(0);
 	}
 
-    return 0;
-}
+	if (tok[0] != '\0') {
+		char *endptr = NULL;
+		long idx = strtol(tok, &endptr, 10);
 
-int scan_biginfo(const struct shell *sh, size_t argc, char **argv) {
-
-    bt_le_per_adv_sync_cb_register(&sync_callbacks);
-
-    if (argc == 1) {
-        shell_print(sh, "Getting BIGInfo for all scanned broadcasts");
-        for (int i = 0; i < ARRAY_SIZE(broadcasts); i++){
-            struct broadcast *b = &broadcasts[i];
-
-            if (b->found) {
-                scan_get_biginfo_for_broadcast(b);
-            }
-        }
-    } else if (argc == 2) {
-		uint8_t broadcast_idx;
-		struct broadcast *b;
-
-		broadcast_idx = strtol(argv[1], NULL, 10);
-		if (broadcast_idx < 0 || broadcast_idx > cur_bcast) {
-			shell_error(sh, "Broadcast index %d out of bounds. Please specify something between 1 and %d. Check current broadcasts with `broadcast list`.", broadcast_idx, cur_bcast);
-			return 1;
+		if (endptr != tok && *endptr == '\0' && idx >= 0) {
+			return nth_valid_locked((size_t)idx);
 		}
+	}
 
-		b = get_broadcast_at_idx(broadcast_idx);
-		scan_get_biginfo_for_broadcast(b);
-    }
+	/* Address match (either type). */
+	bt_addr_le_t want;
 
-    return 0;
+	if (bt_addr_le_from_str(tok, "random", &want) == 0 ||
+	    bt_addr_le_from_str(tok, "public", &want) == 0) {
+		for (int i = 0; i < MAX_CANDIDATES; i++) {
+			if (cands[i].valid &&
+			    addr_match_by_bytes(&cands[i].addr, &want)) {
+				return &cands[i];
+			}
+		}
+	}
+
+	/* Name substring. */
+	for (int i = 0; i < MAX_CANDIDATES; i++) {
+		if (cands[i].valid && strstr(cands[i].name, tok) != NULL) {
+			return &cands[i];
+		}
+	}
+
+	return NULL;
 }
 
-int scan_list(const struct shell *sh, size_t argc, char **argv) {
-    return broadcast_list(sh, argc, argv);
+int sniffer_scan_lookup(const char *tok, struct sniffer_candidate *out)
+{
+	int rc = -ENOENT;
+
+	k_mutex_lock(&cands_mu, K_FOREVER);
+
+	struct sniffer_candidate *slot = lookup_locked(tok);
+
+	if (slot != NULL) {
+		*out = *slot;
+		rc = 0;
+	}
+
+	k_mutex_unlock(&cands_mu);
+	return rc;
 }
+
+int sniffer_scan_set_bcode(const char *tok, const uint8_t *bcode,
+			   size_t bcode_len)
+{
+	if (bcode_len > SNIFFER_CAND_BCODE_MAX) {
+		return -EMSGSIZE;
+	}
+
+	k_mutex_lock(&cands_mu, K_FOREVER);
+
+	struct sniffer_candidate *slot = lookup_locked(tok);
+	int rc;
+
+	if (slot == NULL) {
+		rc = -ENOENT;
+	} else {
+		memset(slot->bcode, 0, sizeof(slot->bcode));
+		if (bcode_len > 0U) {
+			memcpy(slot->bcode, bcode, bcode_len);
+		}
+		slot->bcode_len = (uint8_t)bcode_len;
+		rc = 0;
+	}
+
+	k_mutex_unlock(&cands_mu);
+	return rc;
+}
+
+static int hex_nibble(char c)
+{
+	if (c >= '0' && c <= '9') return c - '0';
+	if (c >= 'a' && c <= 'f') return 10 + (c - 'a');
+	if (c >= 'A' && c <= 'F') return 10 + (c - 'A');
+	return -1;
+}
+
+int sniffer_scan_parse_hex(const char *s, uint8_t *out, size_t out_max,
+			   size_t *out_len)
+{
+	size_t n = 0;
+
+	while (*s && n < out_max) {
+		if (*s == ':' || *s == '-' || *s == ' ') {
+			s++;
+			continue;
+		}
+		int hi = hex_nibble(*s++);
+
+		if (hi < 0) return -EINVAL;
+		int lo = hex_nibble(*s++);
+
+		if (lo < 0) return -EINVAL;
+		out[n++] = (uint8_t)((hi << 4) | lo);
+	}
+	if (*s != '\0') return -EMSGSIZE;
+	*out_len = n;
+	return 0;
+}
+
+static int cmd_scan_on(const struct shell *sh, size_t argc, char **argv)
+{
+	int err;
+
+	ARG_UNUSED(argc);
+	ARG_UNUSED(argv);
+
+	if (sniffer_scan_is_active()) {
+		shell_warn(sh, "scan already running");
+		return 0;
+	}
+	err = sniffer_scan_start();
+	if (err) {
+		shell_error(sh, "scan start failed: %d", err);
+		return err;
+	}
+	shell_print(sh, "scan started");
+	return 0;
+}
+
+static int cmd_scan_off(const struct shell *sh, size_t argc, char **argv)
+{
+	int err;
+
+	ARG_UNUSED(argc);
+	ARG_UNUSED(argv);
+
+	if (!sniffer_scan_is_active()) {
+		shell_warn(sh, "scan not running");
+		return 0;
+	}
+	err = sniffer_scan_stop();
+	if (err) {
+		shell_error(sh, "scan stop failed: %d", err);
+		return err;
+	}
+	shell_print(sh, "scan stopped");
+	return 0;
+}
+
+static int cmd_scan_list(const struct shell *sh, size_t argc, char **argv)
+{
+	struct sniffer_candidate found[MAX_CANDIDATES];
+	size_t n;
+
+	ARG_UNUSED(argc);
+	ARG_UNUSED(argv);
+
+	n = sniffer_scan_get_candidates(found, ARRAY_SIZE(found));
+	if (n == 0U) {
+		shell_print(sh, "no broadcast candidates yet,  `scan on` and wait a few seconds");
+		return 0;
+	}
+	for (size_t i = 0U; i < n; i++) {
+		char addr_str[BT_ADDR_LE_STR_LEN];
+		char bid_str[8];
+
+		bt_addr_le_to_str(&found[i].addr, addr_str, sizeof(addr_str));
+		if (found[i].has_broadcast_id) {
+			snprintk(bid_str, sizeof(bid_str), "%06x",
+				 (unsigned)found[i].broadcast_id);
+		} else {
+			bid_str[0] = '-';
+			bid_str[1] = '\0';
+		}
+		shell_print(sh, "%zu: %s sid=%u rssi=%d bid=%s bcode=%s name='%s'",
+			    i, addr_str, found[i].sid,
+			    (int)found[i].rssi, bid_str,
+			    found[i].bcode_len ? "set" : "-",
+			    found[i].name);
+	}
+	return 0;
+}
+
+static int cmd_scan_clear(const struct shell *sh, size_t argc, char **argv)
+{
+	ARG_UNUSED(argc);
+	ARG_UNUSED(argv);
+
+	sniffer_scan_clear_candidates();
+	shell_print(sh, "candidate list cleared");
+	return 0;
+}
+
+
+static int cmd_scan_biginfo(const struct shell *sh, size_t argc, char **argv)
+{
+	struct sniffer_candidate cand;
+	struct bt_iso_biginfo bi = {0};
+	const char *tok = (argc >= 2) ? argv[1] : NULL;
+	int err;
+
+	err = sniffer_scan_lookup(tok, &cand);
+	if (err) {
+		if (tok == NULL) {
+			shell_error(sh, "no broadcast candidates yes, `scan on` first");
+		} else {
+			shell_error(sh, "no matching candidate for '%s',  "
+					"`scan list` to see options", tok);
+		}
+		return err;
+	}
+
+	char addr_str[BT_ADDR_LE_STR_LEN];
+
+	bt_addr_le_to_str(&cand.addr, addr_str, sizeof(addr_str));
+	shell_print(sh, "scan biginfo: fetching from %s sid=%u name='%s'",
+		    addr_str, cand.sid, cand.name);
+
+	err = big_sync_biginfo_only(&cand, &bi, NULL, NULL, sh);
+	if (err) {
+		shell_error(sh, "biginfo failed: %d", err);
+		return err;
+	}
+
+	/* iso_interval in units of 1.25 ms per Core spec */
+	uint32_t iso_us = (uint32_t)bi.iso_interval * 1250U;
+
+	shell_print(sh,
+		    "  num_bis=%u nse=%u iso_int=%u.%03u ms bn=%u irc=%u pto=%u",
+		    bi.num_bis, bi.sub_evt_count,
+		    iso_us / 1000U, iso_us % 1000U,
+		    bi.burst_number, bi.rep_count, bi.offset);
+	shell_print(sh,
+		    "  max_pdu=%u max_sdu=%u sdu_int=%u framing=%u phy=%u enc=%u",
+		    bi.max_pdu, bi.max_sdu, bi.sdu_interval,
+		    bi.framing, bi.phy, bi.encryption);
+	return 0;
+}
+
+int sniffer_scan_bcode_cmd(const struct shell *sh, size_t argc, char **argv)
+{
+	if (argc != 3) {
+		shell_error(sh, "usage: bcode <target> <hex1..16>|clear");
+		return -EINVAL;
+	}
+
+	const char *tok = argv[1];
+	const char *val = argv[2];
+
+	if (strcmp(val, "clear") == 0) {
+		int err = sniffer_scan_set_bcode(tok, NULL, 0);
+
+		if (err) {
+			shell_error(sh, "no matching candidate for '%s'", tok);
+			return err;
+		}
+		shell_print(sh, "bcode cleared on '%s'", tok);
+		return 0;
+	}
+
+	uint8_t tmp[SNIFFER_CAND_BCODE_MAX] = {0};
+	size_t n = 0;
+	int err = sniffer_scan_parse_hex(val, tmp, sizeof(tmp), &n);
+
+	if (err) {
+		shell_error(sh, "invalid hex (need 1..16 bytes)");
+		return err;
+	}
+	err = sniffer_scan_set_bcode(tok, tmp, n);
+	if (err) {
+		shell_error(sh, "no matching candidate for '%s'", tok);
+		return err;
+	}
+	shell_print(sh, "bcode set on '%s' (%u bytes, zero-padded to 16)",
+		    tok, (unsigned)n);
+	return 0;
+}
+
+SHELL_STATIC_SUBCMD_SET_CREATE(sub_scan,
+	SHELL_CMD(on,    NULL, "Start scanning",             cmd_scan_on),
+	SHELL_CMD(off,   NULL, "Stop scanning",              cmd_scan_off),
+	SHELL_CMD(list,  NULL, "List discovered candidates", cmd_scan_list),
+	SHELL_CMD(clear, NULL, "Clear the candidate list",   cmd_scan_clear),
+	SHELL_CMD_ARG(biginfo, NULL,
+		      "[<target>] (PA sync, dump BIGInfo)",
+		      cmd_scan_biginfo, 1, 1),
+	SHELL_CMD_ARG(bcode, NULL,
+		      "<target> <hex1..16>|clear (per-candidate broadcast_code)",
+		      sniffer_scan_bcode_cmd, 3, 0),
+	SHELL_SUBCMD_SET_END
+);
+
+SHELL_CMD_REGISTER(scan, &sub_scan,
+		   "scan: Auracast BIG discovery",
+		   NULL);
