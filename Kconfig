@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+
+mainmenu "Auracast Hacker's Toolkit"
+
+# Force enable BT_CTLR_ADV_DATA_CHAIN and BT_CTLR_ADV_SYNC_PDU_BACK2BACK
+config AHT_CLONE_ADV_DATA_CHAIN
+	bool
+	default y
+	select BT_CTLR_ADV_DATA_CHAIN
+	select BT_CTLR_ADV_SYNC_PDU_BACK2BACK
+
+source "Kconfig.zephyr"

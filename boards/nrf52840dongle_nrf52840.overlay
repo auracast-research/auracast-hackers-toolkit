@@ -1,15 +1,14 @@
-zephyr_udc0: &usbd {
-	compatible = "nordic,nrf-usbd";
-	status = "okay";
+/*
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Add a second USB CDC-ACM instance (`cdc_acm_data`) in addition to the
+ * default `cdc_acm_uart`. The default one has console + shell,
+ * the new one handles the binary PCAP stream to the Wireshark
+ * extcap on the host.
+ */
 
-	hs_0: hs_0 {
-		compatible = "usb-audio-hs";
-		mic-feature-mute;
-		mic-channel-l;
-		mic-channel-r;
-
-		hp-feature-mute;
-		hp-channel-l;
-		hp-channel-r;
+&zephyr_udc0 {
+	cdc_acm_data: cdc_acm_data {
+		compatible = "zephyr,cdc-acm-uart";
 	};
 };
