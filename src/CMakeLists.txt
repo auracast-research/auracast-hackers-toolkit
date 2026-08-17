@@ -30,10 +30,17 @@ target_sources(app PRIVATE
 	bison/cli.c
 )
 
+# --- bisquit subsystem -------------------------------------------------
+# The LL stuff is shared with bison in the fork (bison_lll_hijack.c).
+target_sources(app PRIVATE
+	bisquit/cli.c
+)
+
 target_include_directories(app PRIVATE
 	.
 	sniff
 	bison
+	bisquit
 )
 
 target_include_directories(app PRIVATE
