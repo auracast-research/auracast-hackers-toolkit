@@ -5,8 +5,10 @@ active BIS hijack (the [BISON attack](https://www.carloalbertoboano.com/document
 encrypted-stream DoS ([BISQuit attack](TODO)), and broadcast cloning (WIP).
 Built for the [nRF52840 USB Dongle](https://www.nordicsemi.com/Products/Development-hardware/nRF52840-Dongle).
 
-This requires our [Zephyr Fork](https://github.com/auracast-research/zephyr)
+It requires our [Zephyr Fork](https://github.com/auracast-research/zephyr)
 due to patches in the Bluetooth Link Layer.
+
+The legacy version of this toolkit can be found in the [legacy branch](https://github.com/auracast-research/auracast-hackers-toolkit/tree/legacy).
 
 ## Installation and Setup
 
@@ -20,11 +22,13 @@ Follow the steps in the [Zephyr Getting Started Guide](https://docs.zephyrprojec
 The manifest in this repository pulls the fork automatically, so you
 can just run:
 
-```
-mkdir aht && cd aht # west needs a top-level dir, a .west will be in aht after west init
+```bash
+# west needs a top-level dir, a .west will be in aht after west init
+mkdir aht && cd aht
 git clone https://github.com/auracast-research/auracast-hackers-toolkit.git
 cd auracast-hackers-toolkit
 west init -l .
+# This automatically pulls our zephyr fork at the aht branch (as defined in west.yaml)
 west update
 west zephyr-export
 pip install -r zephyr/scripts/requirements.txt
@@ -94,6 +98,8 @@ check and drops its BIG sync.
 2. `bisquit stop` stops the flood and tears everything down.
 
 **BISON: BIS Hijack**
+
+> This is currently WIP and does not properly work yet.
 
 BISON injects forged BIS PDUs on top of a real broadcast, timed to
 the real broadcaster's subevents. This is a partial reimplementation 
