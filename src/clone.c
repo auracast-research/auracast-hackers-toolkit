@@ -237,7 +237,7 @@ int clone_start(const struct sniffer_candidate *cand, const struct shell *sh)
 	 */
 	uint32_t src_pa_us = cand->pa_interval_us ? cand->pa_interval_us : 100000U;
 	// uint32_t our_pa_us = src_pa_us / 2U;
-	uint32_t our_pa_ms = our_pa_us / 1000U;
+	uint32_t our_pa_ms = src_pa_us / 1000U;
 
 	if (our_pa_ms < 10U) {
 		our_pa_ms = 10U;

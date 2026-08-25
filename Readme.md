@@ -21,6 +21,7 @@ The manifest in this repository pulls the fork automatically, so you
 can just run:
 
 ```
+mkdir aht && cd aht # west needs a top-level dir, a .west will be in aht after west init
 git clone https://github.com/auracast-research/auracast-hackers-toolkit.git
 cd auracast-hackers-toolkit
 west init -l .
