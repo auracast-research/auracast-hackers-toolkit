@@ -26,7 +26,7 @@ Format on the serial port. Each record starts with a magic identifying the recor
 Install as a Wireshark extcap by symlinking or copying into one of:
     ~/.config/wireshark/extcap/
     ~/.local/lib/wireshark/extcap/
-    /usr/lib/x86_64-linux-gnu/wireshark/extcap/
+    /Applications/Wireshark.app/Contents/MacOS/extcap/ (On macOS sometimes only this one works?)
 
 Depends on pyserial (`pip install pyserial`).
 """

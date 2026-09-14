@@ -1,7 +1,7 @@
 # Auracast Hacker's Toolkit
 
 This is a Zephyr-based security research toolkit for Bluetooth Auracast to do passive sniffing,
-active BIS hijack (the [BISON attack](https://www.carloalbertoboano.com/documents/gasteiger23bison.pdf)),
+active BIS hijacking (the [BISON attack](https://www.carloalbertoboano.com/documents/gasteiger23bison.pdf)),
 encrypted-stream DoS ([BISQuit attack](TODO)), and broadcast cloning (WIP).
 Built for the [nRF52840 USB Dongle](https://www.nordicsemi.com/Products/Development-hardware/nRF52840-Dongle).
 
@@ -11,6 +11,23 @@ due to patches in the Bluetooth Link Layer.
 The legacy version of this toolkit can be found in the [legacy branch](https://github.com/auracast-research/auracast-hackers-toolkit/tree/legacy).
 
 ## Installation and Setup
+
+### Install a Pre-built Release
+
+Download the hex file from the
+[latest release](https://github.com/auracast-research/auracast-hackers-toolkit/releases).
+
+To bundle and flash the firmware, you'll need the legacy version of Nordic's
+[nrfutil](https://github.com/NordicSemiconductor/pc-nrfutil). Then run:
+
+```
+nrfutil pkg generate --hw-version 52 --sd-req=0x00 \
+        --application toolkit.hex --application-version 1 \
+        toolkit.zip
+nrfutil dfu usb-serial -pkg toolkit.zip -p /dev/ttyACM<bootloader>
+```
+
+### Build Auracast Hacker's Toolkit
 
 If you want to build the Auracast Hacker's Toolkit yourself, you'll
 need to set up a Zephyr development environment. Which is pretty
@@ -28,6 +45,7 @@ mkdir aht && cd aht
 git clone https://github.com/auracast-research/auracast-hackers-toolkit.git
 cd auracast-hackers-toolkit
 west init -l .
+
 # This automatically pulls our zephyr fork at the aht branch (as defined in west.yaml)
 west update
 west zephyr-export
@@ -42,10 +60,8 @@ correct virtualenv and your `ZEPHYR_BASE` environment variable:
 west build -p always -b nrf52840dongle/nrf52840
 ```
 
-Then flash the firmware over the dongle's built-in USB bootloader.
-You'll need the legacy version of Nordic's
-[nrfutil](https://github.com/NordicSemiconductor/pc-nrfutil) for this
-to work:
+Then flash the firmware over the dongle's built-in USB bootloader as mentioned
+above, by bundling and flashing the build.
 
 ```
 nrfutil pkg generate --hw-version 52 --sd-req=0x00 \
@@ -53,6 +69,14 @@ nrfutil pkg generate --hw-version 52 --sd-req=0x00 \
         toolkit.zip
 nrfutil dfu usb-serial -pkg toolkit.zip -p /dev/ttyACM<bootloader>
 ```
+
+### Wireshark Extcap
+
+Lastly, if you want to sniff straight into Wireshark, you need to install the [extcap](https://github.com/auracast-research/auracast-hackers-toolkit/blob/main/extcap/auracast_extcap.py) by copying it into one of Wireshark's [extcap directories](https://www.wireshark.org/docs/wsdg_html_chunked/ChCaptureExtcap.html). Usually it's one of the following:
+
+- ~/.config/wireshark/extcap/
+- ~/.local/lib/wireshark/extcap/
+- /Applications/Wireshark.app/Contents/MacOS/extcap/ (On macOS sometimes only this one works?)
 
 ## Usage
 
