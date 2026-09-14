@@ -22,7 +22,7 @@ To bundle and flash the firmware, you'll need the legacy version of Nordic's
 
 ```
 nrfutil pkg generate --hw-version 52 --sd-req=0x00 \
-        --application toolkit.hex --application-version 1 \
+        --application zephyr.hex --application-version 1 \
         toolkit.zip
 nrfutil dfu usb-serial -pkg toolkit.zip -p /dev/ttyACM<bootloader>
 ```
