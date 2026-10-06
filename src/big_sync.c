@@ -6,6 +6,8 @@
 
 #include "bison_lll_hijack.h"
 
+#include "sniffer_tap.h"
+
 #include <string.h>
 
 #include <zephyr/kernel.h>
@@ -292,9 +294,13 @@ int big_sync_start(const struct sniffer_candidate *cand,
 				goto fail_after_pa;
 			}
 			sync_param.encryption = 0U;
+			/* No decryptable BIG_CHANNEL_MAP_IND without the bcode:
+			 * follow channel-map updates via the cleartext BIGInfo
+			 * so we don't desync when the sender re-maps channels. */
+			sniffer_tap_chm_follow_set(true);
 			BIG_SYNC_TRACE(sh, "big_sync: encrypted BIG, bisquit "
 					   "bypass on - forwarding ciphertext "
-					   "(no MIC check)");
+					   "(no MIC check), chmfollow on");
 		}
 	}
 

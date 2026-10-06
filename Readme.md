@@ -109,6 +109,7 @@ substring. Leave it out to use the first entry.
    m1` streams reassembled HCI ISO Data as `BLUETOOTH_HCI_H4`.
   
 - `sniff raw` captures an encrypted BIG without a Broadcast_Code and forwards the ciphertext instead of the decrypted payload.
+- `sniff chmfollow` follows channel-map updates on an encrypted BIG synced without a Broadcast_Code. The sender's `BIG_CHANNEL_MAP_IND` control PDU is encrypted and unparsable, so we'd normally desync when it remaps channels; instead we detect the control PDU on the wire (its header is cleartext) and pull the new channel map from the cleartext BIGInfo. A few PDUs are lost across the transition. It is auto-enabled by `sniff raw on` (and by the BISQuit bypass); toggle it off with `sniff chmfollow off`. `sniff status` shows `chmfollow=` and `chm_updates_applied=`.
 - `sniff greedy on` turns on greedy mode: sniffer tries to capture all subevents, including all pre- and retransmissions.
 - `sniff payload_omit on` drops PDU payloads: can be helpful if payload is not important and a lot of packet loss is observed.
 

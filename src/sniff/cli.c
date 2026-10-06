@@ -107,6 +107,15 @@ static int cmd_raw(const struct shell *sh, size_t argc, char **argv)
 	shell_print(sh, "raw = %s  (encrypted BIGs sync without bcode; "
 			"ciphertext + MIC forwarded to Wireshark)",
 		    on ? "on" : "off");
+	if (on) {
+		/* Auto-enable channel-map following: without the bcode the
+		 * BIG_CHANNEL_MAP_IND control PDU is undecryptable, so we track
+		 * updates via the cleartext BIGInfo. Toggle with `sniff
+		 * chmfollow` if you want it off. */
+		sniffer_tap_chm_follow_set(true);
+		shell_print(sh, "chmfollow = on  (auto-enabled with raw; follow "
+				"encrypted channel-map updates via BIGInfo)");
+	}
 	return 0;
 }
 
@@ -250,6 +259,34 @@ static int cmd_payload_omit(const struct shell *sh, size_t argc, char **argv)
 	return 0;
 }
 
+static int cmd_chmfollow(const struct shell *sh, size_t argc, char **argv)
+{
+	if (argc == 1) {
+		shell_print(sh, "chmfollow = %s",
+			    sniffer_tap_chm_follow_get() ? "on" : "off");
+		return 0;
+	}
+	if (argc != 2) {
+		shell_error(sh, "usage: sniff chmfollow [on|off]");
+		return -EINVAL;
+	}
+	bool on;
+	if (strcmp(argv[1], "on") == 0) {
+		on = true;
+	} else if (strcmp(argv[1], "off") == 0) {
+		on = false;
+	} else {
+		shell_error(sh, "unknown '%s' (use on|off)", argv[1]);
+		return -EINVAL;
+	}
+	sniffer_tap_chm_follow_set(on);
+	shell_print(sh, "chmfollow = %s  (follow encrypted channel-map updates via "
+			"cleartext BIGInfo; needs an encrypted BIG synced without "
+			"a bcode, i.e. `sniff raw on`)",
+		    on ? "on" : "off");
+	return 0;
+}
+
 static int cmd_reset_probes(const struct shell *sh, size_t argc, char **argv)
 {
 	ARG_UNUSED(argc);
@@ -284,6 +321,10 @@ static int cmd_status(const struct shell *sh, size_t argc, char **argv)
 		    sniffer_tap_ctrl_probe_get() ? "on" : "off",
 		    sniffer_tap_greedy_get() ? "on" : "off",
 		    sniffer_tap_payload_omit_get() ? "on" : "off");
+	shell_print(sh, "chmfollow=%s chm_updates_applied=%u ctrl_pdus_seen=%u",
+		    sniffer_tap_chm_follow_get() ? "on" : "off",
+		    sniffer_tap_chm_follow_applied(),
+		    sniffer_tap_ctrl_seen_total());
 	shell_print(sh, "lll_tap ctrl_se: detected=%u forwarded=%u",
 		    sniffer_tap_ctrl_se_detected(),
 		    sniffer_tap_ctrl_se_forwarded());
@@ -401,6 +442,9 @@ SHELL_STATIC_SUBCMD_SET_CREATE(sniff_cmds,
 	SHELL_CMD_ARG(payload_omit, NULL,
 		      "[on|off] - header-only capture: keep timing/header, replace payload bytes",
 		      cmd_payload_omit, 1, 1),
+	SHELL_CMD_ARG(chmfollow, NULL,
+		      "[on|off] - follow encrypted channel-map updates via BIGInfo (auto-on with raw)",
+		      cmd_chmfollow, 1, 1),
 	SHELL_CMD(reset_probes, NULL,
 		  "Reset ISR + tap timing probes for a fresh measurement",
 		  cmd_reset_probes),
